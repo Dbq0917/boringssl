@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <vector>
 
 #include <openssl/bytestring.h>
 #include <openssl/hkdf.h>
@@ -327,6 +328,7 @@ bool SSLCredential::SetLeafCert(UniquePtr<CRYPTO_BUFFER> leaf,
   if (private_key_matches_leaf) {
     pubkey = std::move(new_pubkey);
   }
+  ReorderIntermediateCerts();
   return true;
 }
 
@@ -396,7 +398,90 @@ bool SSLCredential::AppendIntermediateCert(UniquePtr<CRYPTO_BUFFER> cert) {
     }
   }
 
-  return PushToStack(chain.get(), std::move(cert));
+  if (!PushToStack(chain.get(), std::move(cert))) {
+    return false;
+  }
+
+  ReorderIntermediateCerts();
+  return true;
+}
+
+void SSLCredential::ReorderIntermediateCerts() {
+  if (!UsesX509() || chain == nullptr ||
+      sk_CRYPTO_BUFFER_num(chain.get()) < 3) {
+    return;
+  }
+
+  CRYPTO_BUFFER *leaf = sk_CRYPTO_BUFFER_value(chain.get(), 0);
+  if (leaf == nullptr) {
+    return;
+  }
+
+  CBS leaf_cbs, issuer;
+  CRYPTO_BUFFER_init_CBS(leaf, &leaf_cbs);
+  if (!ssl_cert_extract_issuer(&leaf_cbs, &issuer)) {
+    return;
+  }
+
+  std::vector<CRYPTO_BUFFER *> remaining;
+  remaining.reserve(sk_CRYPTO_BUFFER_num(chain.get()) - 1);
+  for (size_t i = 1; i < sk_CRYPTO_BUFFER_num(chain.get()); i++) {
+    CRYPTO_BUFFER *cert = sk_CRYPTO_BUFFER_value(chain.get(), i);
+    if (cert == nullptr) {
+      return;
+    }
+    remaining.push_back(cert);
+  }
+
+  std::vector<CRYPTO_BUFFER *> ordered;
+  ordered.reserve(remaining.size());
+  while (!remaining.empty()) {
+    auto next = std::find_if(
+        remaining.begin(), remaining.end(), [&](CRYPTO_BUFFER *candidate) {
+          CBS candidate_cbs, subject;
+          CRYPTO_BUFFER_init_CBS(candidate, &candidate_cbs);
+          return ssl_cert_extract_subject(&candidate_cbs, &subject) &&
+                 CBS_mem_equal(&subject, CBS_data(&issuer), CBS_len(&issuer));
+        });
+    if (next == remaining.end()) {
+      break;
+    }
+
+    CRYPTO_BUFFER *cert = *next;
+    CBS cert_cbs;
+    CRYPTO_BUFFER_init_CBS(cert, &cert_cbs);
+    if (!ssl_cert_extract_issuer(&cert_cbs, &issuer)) {
+      return;
+    }
+    ordered.push_back(cert);
+    remaining.erase(next);
+  }
+  ordered.insert(ordered.end(), remaining.begin(), remaining.end());
+
+  bool changed = false;
+  for (size_t i = 0; i < ordered.size(); i++) {
+    if (ordered[i] != sk_CRYPTO_BUFFER_value(chain.get(), i + 1)) {
+      changed = true;
+      break;
+    }
+  }
+  if (!changed) {
+    return;
+  }
+
+  UniquePtr<STACK_OF(CRYPTO_BUFFER)> reordered(
+      sk_CRYPTO_BUFFER_new_null());
+  if (reordered == nullptr ||
+      !PushToStack(reordered.get(), UpRef(leaf))) {
+    return;
+  }
+  for (CRYPTO_BUFFER *cert : ordered) {
+    if (!PushToStack(reordered.get(), UpRef(cert))) {
+      return;
+    }
+  }
+
+  chain = std::move(reordered);
 }
 
 BSSL_NAMESPACE_END

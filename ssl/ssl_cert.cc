@@ -138,6 +138,7 @@ bool ssl_set_cert(CERT *cert, UniquePtr<CRYPTO_BUFFER> buffer) {
   }
 
   cert->x509_method->cert_flush_cached_leaf(cert);
+  cert->x509_method->cert_flush_cached_chain(cert);
   return true;
 }
 
@@ -300,6 +301,33 @@ bool ssl_cert_extract_issuer(const CBS *in, CBS *out_dn) {
       // signature algorithm
       !CBS_get_asn1(&cert, nullptr, CBS_ASN1_SEQUENCE) ||  //
       // issuer
+      !CBS_get_asn1_element(&cert, out_dn, CBS_ASN1_SEQUENCE)) {
+    return false;
+  }
+  return true;
+}
+
+bool ssl_cert_extract_subject(const CBS *in, CBS *out_dn) {
+  CBS buf = *in;
+
+  CBS toplevel;
+  CBS cert;
+  if (!CBS_get_asn1(&buf, &toplevel, CBS_ASN1_SEQUENCE) ||   //
+      CBS_len(&buf) != 0 ||                                  //
+      !CBS_get_asn1(&toplevel, &cert, CBS_ASN1_SEQUENCE) ||  //
+      // version
+      !CBS_get_optional_asn1(
+          &cert, nullptr, nullptr,
+          CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 0) ||  //
+      // serialNumber
+      !CBS_get_asn1(&cert, nullptr, CBS_ASN1_INTEGER) ||  //
+      // signature algorithm
+      !CBS_get_asn1(&cert, nullptr, CBS_ASN1_SEQUENCE) ||  //
+      // issuer
+      !CBS_get_asn1(&cert, nullptr, CBS_ASN1_SEQUENCE) ||  //
+      // validity
+      !CBS_get_asn1(&cert, nullptr, CBS_ASN1_SEQUENCE) ||  //
+      // subject
       !CBS_get_asn1_element(&cert, out_dn, CBS_ASN1_SEQUENCE)) {
     return false;
   }

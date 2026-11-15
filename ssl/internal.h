@@ -1158,6 +1158,11 @@ bool ssl_cert_check_key_usage(const CBS *in, enum ssl_key_usage_t bit);
 // issuer is in `out_dn`, otherwise it returns false.
 bool ssl_cert_extract_issuer(const CBS *in, CBS *out_dn);
 
+// ssl_cert_extract_subject parses the DER-encoded, X.509 certificate in `in`
+// and extracts the subject. On success it returns true and the DER encoded
+// subject is in `out_dn`, otherwise it returns false.
+bool ssl_cert_extract_subject(const CBS *in, CBS *out_dn);
+
 // ssl_cert_matches_issuer parses the DER-encoded, X.509 certificate in `in`
 // and returns true if its issuer is an exact match for the DER encoded
 // distinguished name in `dn`
@@ -1505,6 +1510,11 @@ class SSLCredential : public ssl_credential_st,
   // no leaf certificate configured, it leaves a placeholder null in `chain`. It
   // returns one on success and zero on error.
   bool AppendIntermediateCert(UniquePtr<CRYPTO_BUFFER> cert);
+
+  // ReorderIntermediateCerts reorders the intermediate certificates into a
+  // path from the leaf, without changing the set of certificates. It does
+  // nothing if the chain cannot be parsed into a path.
+  void ReorderIntermediateCerts();
 
   // ChainContainsIssuer returns true if `dn` is a byte for byte match with the
   // issuer of any certificate in `chain`, false otherwise.

@@ -5722,6 +5722,80 @@ TEST(SSLTest, OverrideChain) {
                           {leaf.get(), ca.get()}));
 }
 
+TEST(SSLTest, ReorderCredentialChain) {
+  bssl::UniquePtr<CRYPTO_BUFFER> leaf = GetChainTestCertificateBuffer();
+  ASSERT_TRUE(leaf);
+  bssl::UniquePtr<CRYPTO_BUFFER> intermediate =
+      GetChainTestIntermediateBuffer();
+  ASSERT_TRUE(intermediate);
+
+  // The test intermediate is issued by "C Root CA". Make a matching root
+  // certificate. Since this test only checks chain ordering, the signature need
+  // not match the intermediate.
+  bssl::UniquePtr<X509> root_x509(X509_new());
+  bssl::UniquePtr<X509_NAME> root_name(X509_NAME_new());
+  bssl::UniquePtr<EVP_PKEY> key = GetTestKey();
+  ASSERT_TRUE(root_x509);
+  ASSERT_TRUE(root_name);
+  ASSERT_TRUE(key);
+  ASSERT_TRUE(X509_NAME_add_entry_by_txt(
+      root_name.get(), "CN", MBSTRING_ASC,
+      reinterpret_cast<const unsigned char *>("C Root CA"), -1, -1, 0));
+  ASSERT_TRUE(ASN1_INTEGER_set(X509_get_serialNumber(root_x509.get()), 1));
+  ASSERT_TRUE(X509_gmtime_adj(X509_getm_notBefore(root_x509.get()), 0));
+  ASSERT_TRUE(X509_gmtime_adj(X509_getm_notAfter(root_x509.get()), 3600));
+  ASSERT_TRUE(X509_set_issuer_name(root_x509.get(), root_name.get()));
+  ASSERT_TRUE(X509_set_subject_name(root_x509.get(), root_name.get()));
+  ASSERT_TRUE(X509_set_pubkey(root_x509.get(), key.get()));
+  ASSERT_TRUE(X509_sign(root_x509.get(), key.get(), EVP_sha256()));
+  uint8_t *root_der = nullptr;
+  int root_der_len = i2d_X509(root_x509.get(), &root_der);
+  ASSERT_GT(root_der_len, 0);
+  bssl::UniquePtr<CRYPTO_BUFFER> root(
+      CRYPTO_BUFFER_new(root_der, root_der_len, nullptr));
+  OPENSSL_free(root_der);
+  ASSERT_TRUE(root);
+
+  bssl::UniquePtr<SSL_CREDENTIAL> cred(SSL_CREDENTIAL_new_x509());
+  ASSERT_TRUE(cred);
+  std::vector<CRYPTO_BUFFER *> chain = {leaf.get(), root.get(),
+                                        intermediate.get()};
+  ASSERT_TRUE(
+      SSL_CREDENTIAL_set1_cert_chain(cred.get(), chain.data(), chain.size()));
+
+  const SSLCredential *cred_impl = FromOpaque(cred.get());
+  ASSERT_EQ(3u, sk_CRYPTO_BUFFER_num(cred_impl->chain.get()));
+  EXPECT_EQ(leaf.get(), sk_CRYPTO_BUFFER_value(cred_impl->chain.get(), 0));
+  EXPECT_EQ(intermediate.get(),
+            sk_CRYPTO_BUFFER_value(cred_impl->chain.get(), 1));
+  EXPECT_EQ(root.get(), sk_CRYPTO_BUFFER_value(cred_impl->chain.get(), 2));
+
+  // The legacy APIs may also be called with the intermediates before the leaf.
+  bssl::UniquePtr<X509> leaf_x509 = GetChainTestCertificate();
+  bssl::UniquePtr<X509> intermediate_x509 = GetChainTestIntermediate();
+  bssl::UniquePtr<SSL_CTX> ctx(SSL_CTX_new(TLS_method()));
+  ASSERT_TRUE(leaf_x509);
+  ASSERT_TRUE(intermediate_x509);
+  ASSERT_TRUE(ctx);
+  ASSERT_TRUE(SSL_CTX_add1_chain_cert(ctx.get(), root_x509.get()));
+  ASSERT_TRUE(SSL_CTX_add1_chain_cert(ctx.get(), intermediate_x509.get()));
+
+  // Populate the cached chain before setting the leaf to ensure setting the
+  // leaf refreshes the cache after reordering.
+  STACK_OF(X509) *legacy_chain = nullptr;
+  ASSERT_TRUE(SSL_CTX_get0_chain_certs(ctx.get(), &legacy_chain));
+  ASSERT_EQ(2u, sk_X509_num(legacy_chain));
+  EXPECT_EQ(0, X509_cmp(root_x509.get(), sk_X509_value(legacy_chain, 0)));
+
+  ASSERT_TRUE(SSL_CTX_use_certificate(ctx.get(), leaf_x509.get()));
+
+  ASSERT_TRUE(SSL_CTX_get0_chain_certs(ctx.get(), &legacy_chain));
+  ASSERT_EQ(2u, sk_X509_num(legacy_chain));
+  EXPECT_EQ(0, X509_cmp(intermediate_x509.get(),
+                        sk_X509_value(legacy_chain, 0)));
+  EXPECT_EQ(0, X509_cmp(root_x509.get(), sk_X509_value(legacy_chain, 1)));
+}
+
 TEST(SSLTest, OverrideChainAndKey) {
   bssl::UniquePtr<EVP_PKEY> key1 = GetChainTestKey();
   ASSERT_TRUE(key1);

@@ -874,7 +874,8 @@ OPENSSL_EXPORT int SSL_CREDENTIAL_set1_signing_algorithm_prefs(
 
 // SSL_CREDENTIAL_set1_cert_chain sets `cred`'s certificate chain, starting from
 // the leaf, to `num_cert`s certificates from `certs`. It returns one on success
-// and zero on error.
+// and zero on error. Intermediate certificates may be configured in any order;
+// BoringSSL reorders them into a path from the leaf before sending them.
 OPENSSL_EXPORT int SSL_CREDENTIAL_set1_cert_chain(SSL_CREDENTIAL *cred,
                                                   CRYPTO_BUFFER *const *certs,
                                                   size_t num_certs);
@@ -990,8 +991,9 @@ OPENSSL_EXPORT const SSL_CREDENTIAL *SSL_get0_selected_credential(
 //
 // These functions configure the connection's leaf certificate, private key, and
 // certificate chain. The certificate chain is ordered leaf to root (as sent on
-// the wire) but does not include the leaf. Both client and server certificates
-// use these functions.
+// the wire) but does not include the leaf. Intermediate certificates may be
+// configured in any order and are reordered into a path from the leaf before
+// sending. Both client and server certificates use these functions.
 //
 // Prefer to configure the certificate before the private key. If configured in
 // the other order, inconsistent private keys will be silently dropped, rather
